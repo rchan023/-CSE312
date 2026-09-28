@@ -1,0 +1,90 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"time"
+)
+
+func main() {
+	// keep file access inside public, including paths through links
+	root, err := os.OpenRoot("public")
+	if err != nil {
+		fmt.Println("Error opening public folder:", err)
+		return
+	}
+	defer root.Close()
+	// set up the homepage, chat page, and public file routes once
+	router := CreateRouter(root)
+
+	// listen for browser connections on port 8080
+	listener, err := net.Listen("tcp", ":8080")
+	if err != nil {
+		fmt.Println("Error starting server:", err)
+		return
+	}
+	// defer schedules cleanup for when this function returns.
+	defer listener.Close()
+
+	fmt.Println("Server is listening on port 8080...")
+
+	// Accept connections until server is stopped
+	for {
+		// Accept waits until client connects
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+
+		// handles client while main accepts other clients.
+		go handleConnection(conn, router)
+	}
+}
+
+func handleConnection(conn net.Conn, router *Router) {
+	// Close client's connection when handler finishes.
+	defer conn.Close()
+
+	// Give the client 30 seconds to send its request instead of waiting forever.
+	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		fmt.Println("Error setting read deadline:", err)
+		return
+	}
+	// Collect complete headers and body, then use the parsed Request.
+	request, err := ReadRequest(conn)
+	if err != nil {
+		fmt.Println("Error parsing request:", err)
+		// tell the browser its request could not be read or understood
+		writeResponse(conn, ErrorResponse(400, "Bad Request"))
+		return
+	}
+
+	fmt.Printf("Parsed Request: Method: %s, Path: %s, Headers: %v, Body: %s\n",
+		request.Method, request.Path, request.Headers, string(request.Body))
+
+	// The response-building code and its comments now live in response.go.
+	// choose the handler, then send the response it returns
+	response := router.Route(request)
+	writeResponse(conn, response)
+}
+
+func writeResponse(conn net.Conn, response *Response) {
+	// stop waiting if the client is not receiving our response
+	if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		fmt.Println("Error setting write deadline:", err)
+		return
+	}
+
+	// send response as bytes, _ discards the returned byte count
+	// Bytes builds the HTTP message; NewReader lets Copy read those bytes
+	// Copy transfers the response to the connection and reports write errors
+	_, err := io.Copy(conn, bytes.NewReader(response.Bytes()))
+	if err != nil {
+		fmt.Println("Error writing to connection:", err)
+		return
+	}
+}

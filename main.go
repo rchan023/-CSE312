@@ -10,6 +10,22 @@ import (
 )
 
 func main() {
+	// connect to PostgreSQL before accepting browser requests
+	db, err := OpenDatabase()
+	if err != nil {
+		fmt.Println("Database error:", err)
+		return
+	}
+	defer db.Close()
+	fmt.Println("Connected to PostgreSQL")
+
+	// create missing tables before the server starts
+	if err := CreateTables(db); err != nil {
+		fmt.Println("Database setup error:", err)
+		return
+	}
+	fmt.Println("Database tables are ready")
+
 	// keep file access inside public, including paths through links
 	root, err := os.OpenRoot("public")
 	if err != nil {
@@ -19,6 +35,8 @@ func main() {
 	defer root.Close()
 	// set up the homepage, chat page, and public file routes once
 	router := CreateRouter(root)
+	// add chat routes that use PostgreSQL
+	AddChatRoutes(router, db)
 
 	// listen for browser connections on port 8080
 	listener, err := net.Listen("tcp", ":8080")
@@ -63,8 +81,8 @@ func handleConnection(conn net.Conn, router *Router) {
 		return
 	}
 
-	fmt.Printf("Parsed Request: Method: %s, Path: %s, Headers: %v, Body: %s\n",
-		request.Method, request.Path, request.Headers, string(request.Body))
+	// log the route without printing secret cookies or message contents
+	fmt.Printf("Parsed Request: Method: %s, Path: %s\n", request.Method, request.Path)
 
 	// The response-building code and its comments now live in response.go.
 	// choose the handler, then send the response it returns

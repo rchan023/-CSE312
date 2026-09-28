@@ -12,7 +12,11 @@ import (
 // collects one complete request from connection
 func ReadRequest(source io.Reader) (*Request, error) {
 	// bufio makes reading incoming bytes good
-	reader := bufio.NewReader(source)
+	// reuse buffered bytes when another request arrives on the same connection
+	reader, buffered := source.(*bufio.Reader)
+	if !buffered {
+		reader = bufio.NewReader(source)
+	}
 	headers := make([]byte, 0, 1024)
 
 	// Stop only when end of the headers finishes
@@ -24,6 +28,10 @@ func ReadRequest(source io.Reader) (*Request, error) {
 		//read next byte
 		b, err := reader.ReadByte()
 		if err != nil {
+			// EOF before a new request means the client closed normally
+			if err == io.EOF && len(headers) > 0 {
+				err = io.ErrUnexpectedEOF
+			}
 			return nil, fmt.Errorf("reading request headers: %w", err)
 		}
 		headers = append(headers, b)
@@ -55,12 +63,16 @@ func ReadRequest(source io.Reader) (*Request, error) {
 	// It returns an error if the client disconnects before sending them all.
 	request.Body = make([]byte, length)
 	if _, err := io.ReadFull(reader, request.Body); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, fmt.Errorf("reading request body: %w", err)
 	}
 	return request, nil
 }
 
 type Request struct {
+	Version string            // HTTP/1.1 or HTTP/1.0
 	Method  string            //action such as GET, POST, etc
 	Path    string            //target such as /chat
 	Headers map[string]string //holds metadata, make creates an empty header map
@@ -80,9 +92,13 @@ func ParseRequest(raw []byte) (*Request, error) {
 	if len(requestLine) != 3 {
 		return nil, fmt.Errorf("invalid request line")
 	}
+	if requestLine[2] != "HTTP/1.1" && requestLine[2] != "HTTP/1.0" {
+		return nil, fmt.Errorf("unsupported HTTP version")
+	}
 
 	// creates pointer to Request
 	request := &Request{
+		Version: requestLine[2],
 		Method:  requestLine[0],
 		Path:    requestLine[1],
 		Headers: make(map[string]string),
@@ -103,8 +119,27 @@ func ParseRequest(raw []byte) (*Request, error) {
 			return nil, fmt.Errorf("duplicate  header: %s", name)
 		}
 		// remove space around the value
+		// combine repeated Connection headers so a close request is not lost
+		if name == "connection" && request.Headers[name] != "" {
+			request.Headers[name] += ", " + strings.TrimSpace(header[1])
+			continue
+		}
 		request.Headers[name] = strings.TrimSpace(header[1])
 	}
 
 	return request, nil
+}
+
+func (request *Request) KeepAlive() bool {
+	// HTTP/1.1 stays open by default, HTTP/1.0 closes by default
+	keepAlive := request.Version == "HTTP/1.1"
+	for _, value := range strings.Split(request.Headers["connection"], ",") {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "close":
+			return false
+		case "keep-alive":
+			keepAlive = true
+		}
+	}
+	return keepAlive
 }

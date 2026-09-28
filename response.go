@@ -8,6 +8,7 @@ import (
 
 // Response holds the information we want to send back to the browser.
 type Response struct {
+	KeepAlive  bool // true leaves the connection open for another request
 	StatusCode int
 	StatusText string
 	Headers    map[string]string
@@ -69,10 +70,14 @@ func (r *Response) Bytes() []byte {
 	}
 
 	// Sprintf replaces %d with the length and %s with our message.
+	connection := "Connection: close\r\n" //close connection after response
+	if r.KeepAlive {
+		connection = "Connection: keep-alive\r\n"
+	}
+	result += connection
 	result += fmt.Sprintf(
 		"Content-Length: %d\r\n"+ //length of body in bytes
 			"X-Content-Type-Options: nosniff\r\n"+ //prevents browser from guessing content type
-			"Connection: close\r\n"+ //close connection after response
 			"\r\n"+ //blank line separates headers and body
 			"%s", //body of response
 		len(r.Body), //length of body in bytes

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -66,35 +68,54 @@ func main() {
 func handleConnection(conn net.Conn, router *Router) {
 	// Close client's connection when handler finishes.
 	defer conn.Close()
+	// one reader per connection keeps extra bytes for the next request
+	reader := bufio.NewReader(conn)
+	for {
 
-	// Give the client 30 seconds to send its request instead of waiting forever.
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		fmt.Println("Error setting read deadline:", err)
-		return
+		// Give the client 30 seconds to send its request instead of waiting forever.
+		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			fmt.Println("Error setting read deadline:", err)
+			return
+		}
+		// Collect complete headers and body, then use the parsed Request.
+		request, err := ReadRequest(reader)
+		if err != nil {
+			// stop the goroutine when the client disconnects or stops sending
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				return
+			}
+			fmt.Println("Error parsing request:", err)
+			// tell the browser its request could not be read or understood
+			writeResponse(conn, ErrorResponse(400, "Bad Request"))
+			return
+		}
+
+		// log the route without printing secret cookies or message contents
+		fmt.Printf("Parsed Request: Method: %s, Path: %s\n", request.Method, request.Path)
+
+		// The response-building code and its comments now live in response.go.
+		// choose the handler, then send the response it returns
+		response := router.Route(request)
+		response.KeepAlive = request.KeepAlive()
+		if err := writeResponse(conn, response); err != nil {
+			return
+		}
+		if !response.KeepAlive {
+			return
+		}
+		// loop back to read the next request on this connection
 	}
-	// Collect complete headers and body, then use the parsed Request.
-	request, err := ReadRequest(conn)
-	if err != nil {
-		fmt.Println("Error parsing request:", err)
-		// tell the browser its request could not be read or understood
-		writeResponse(conn, ErrorResponse(400, "Bad Request"))
-		return
-	}
-
-	// log the route without printing secret cookies or message contents
-	fmt.Printf("Parsed Request: Method: %s, Path: %s\n", request.Method, request.Path)
-
-	// The response-building code and its comments now live in response.go.
-	// choose the handler, then send the response it returns
-	response := router.Route(request)
-	writeResponse(conn, response)
 }
 
-func writeResponse(conn net.Conn, response *Response) {
+func writeResponse(conn net.Conn, response *Response) error {
 	// stop waiting if the client is not receiving our response
 	if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		fmt.Println("Error setting write deadline:", err)
-		return
+		return err
 	}
 
 	// send response as bytes, _ discards the returned byte count
@@ -103,6 +124,7 @@ func writeResponse(conn net.Conn, response *Response) {
 	_, err := io.Copy(conn, bytes.NewReader(response.Bytes()))
 	if err != nil {
 		fmt.Println("Error writing to connection:", err)
-		return
+		return err
 	}
+	return nil
 }

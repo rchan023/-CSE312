@@ -1,0 +1,33 @@
+services:
+  server:
+    # build using the Dockerfile in this folder
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      # db is the database container's name on the Compose network
+      DATABASE_URL: "postgres://cse312:local-dev-password@db:5432/cse312?sslmode=disable"
+    depends_on:
+      db:
+        # wait until PostgreSQL accepts connections
+        condition: service_healthy
+
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: cse312
+      POSTGRES_PASSWORD: local-dev-password
+      POSTGRES_DB: cse312
+    volumes:
+      # keep messages when containers stop or are recreated
+      - chat-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U cse312 -d cse312"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+volumes:
+  # Compose creates a separate database volume for this project
+  chat-data:

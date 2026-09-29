@@ -17,7 +17,7 @@ func CreateRouter(root *os.Root) *Router {
 	// files holds access to public, router starts with no routes
 	files := &FileHandlers{Root: root}
 	router := &Router{}
-	// false requires an exact path, true allows any path with this prefix
+	// false requires an exact path, true allows path with prefix
 	router.AddRoute("GET", "/", false, files.Home)
 	router.AddRoute("GET", "/chat", false, files.Chat)
 	router.AddRoute("GET", "/public/", true, files.StaticFile)
@@ -36,18 +36,17 @@ func (files *FileHandlers) RenderPage(name string) *Response {
 	// read the shared layout containing menus and the content placeholder
 	layout, err := files.Root.ReadFile("layout/layout.html")
 	if err != nil {
-		// 500 means the server could not load a file it needs
 		return ErrorResponse(500, "Internal Server Error")
 	}
-	// read the page we want to insert, like index.html or chat.html
+	// read the page to insert
 	page, err := files.Root.ReadFile(name)
 	if err != nil {
 		return ErrorResponse(500, "Internal Server Error")
 	}
-	// put page content inside the layout
+	// put page content in the layout
 	html := strings.ReplaceAll(string(layout), "{{content}}", string(page))
 	response := NewResponse()
-	// tell the browser to render HTML and use UTF-8 for emojis
+	// tell browser to render HTML and UTF-8 for emojis
 	response.SetBinary([]byte(html), "text/html; charset=utf-8")
 	return response
 }
@@ -55,7 +54,7 @@ func (files *FileHandlers) RenderPage(name string) *Response {
 func (files *FileHandlers) StaticFile(request *Request) *Response {
 	// remove /public/ because root already points to public
 	name := strings.TrimPrefix(request.Path, "/public/")
-	// reject Windows path separators, drive/stream colons, and null bytes
+	// err if contains backslash, colon, or null char
 	if name == "" || strings.ContainsAny(name, "\\:\x00") {
 		return ErrorResponse(404, "Not Found")
 	}
@@ -66,13 +65,12 @@ func (files *FileHandlers) StaticFile(request *Request) *Response {
 			return ErrorResponse(404, "Not Found")
 		}
 	}
-	// only serve regular files, not folders or special devices
 	info, err := files.Root.Stat(name)
 	// Stat gets file information without reading the file contents
 	if err != nil || !info.Mode().IsRegular() {
 		return ErrorResponse(404, "Not Found")
 	}
-	// read raw bytes so images are sent without changing their contents
+	// read raw bytes so images don't change content
 	body, err := files.Root.ReadFile(name)
 	if err != nil {
 		return ErrorResponse(404, "Not Found")
@@ -84,24 +82,23 @@ func (files *FileHandlers) StaticFile(request *Request) *Response {
 	hash := sha256.Sum256(body)
 	etag := fmt.Sprintf("\"%x\"", hash)
 	response.AddHeader("ETag", etag)
-	// browser can reuse the file for 10 seconds before checking again
+	// browser can reuse file for 10 seconds before checking again
 	response.AddHeader("Cache-Control", "public, max-age=10, must-revalidate")
 	if ETagMatches(request.Headers["if-none-match"], etag) {
-		// browser already has this version, so send headers without the file
+		// browser already has this version, so send header without file
 		response.SetStatus(304, "Not Modified")
 		response.Body = nil
 	}
 	return response
 }
 
+// check if browser has same etag as server
 func ETagMatches(header string, etag string) bool {
-	// clients can send a list of tags or * for any existing version
 	for _, tag := range strings.Split(header, ",") {
 		tag = strings.TrimSpace(tag)
 		if tag == "*" {
 			return true
 		}
-		// weak tags use W/ before the quoted value and also work for GET
 		tag = strings.TrimPrefix(tag, "W/")
 		if tag == etag {
 			return true
@@ -112,7 +109,6 @@ func ETagMatches(header string, etag string) bool {
 
 // choose content type from file extension
 func FileContentType(name string) string {
-	// Ext gets the ending, like .jpg; lowercase also handles .JPG
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".html":
 		return "text/html; charset=utf-8"

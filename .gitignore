@@ -1,0 +1,7 @@
+# keep local files and secrets out of the Docker build
+.git
+.env
+.env.*
+*.exe
+*.zip
+*_test.go

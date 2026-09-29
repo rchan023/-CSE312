@@ -18,7 +18,6 @@ type ChatHandlers struct {
 	DB *sql.DB
 }
 
-// json names match what the frontend expects
 type ChatMessage struct {
 	Author   string `json:"author"`
 	ID       string `json:"id"`
@@ -44,13 +43,13 @@ func RandomHex(size int) (string, error) {
 	return hex.EncodeToString(data), nil
 }
 
-// store the hash in PostgreSQL, not the secret cookie itself
+// store hash in database
 func TokenHash(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])
 }
 
-// find our cookie among the browser's other cookies
+// find cookie
 func GuestToken(request *Request) string {
 	for _, cookie := range strings.Split(request.Headers["cookie"], ";") {
 		parts := strings.SplitN(strings.TrimSpace(cookie), "=", 2)
@@ -66,22 +65,22 @@ func GuestToken(request *Request) string {
 }
 
 func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
-	// pointer lets us tell a missing content field from an empty string
+	// pointer to compare empty vs. null
 	var input struct {
 		Content *string `json:"content"`
 	}
 	if !utf8.Valid(request.Body) || json.Unmarshal(request.Body, &input) != nil || input.Content == nil {
 		return ErrorResponse(400, "Bad Request")
 	}
-	// PostgreSQL text cannot contain a null byte
+	// SQl can't take NULL byte
 	if strings.ContainsRune(*input.Content, '\x00') {
 		return ErrorResponse(400, "Bad Request")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timer, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// save a new guest and their first message together
-	tx, err := chat.DB.BeginTx(ctx, nil)
+	// save new person and their first message
+	tx, err := chat.DB.BeginTx(timer, nil)
 	if err != nil {
 		return ChatDatabaseError(err)
 	}
@@ -91,8 +90,8 @@ func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
 	token := GuestToken(request)
 	newToken := ""
 	if token != "" {
-		// $1 passes data separately so it cannot become SQL commands
-		err = tx.QueryRowContext(ctx, "SELECT id FROM guests WHERE token_hash = $1", TokenHash(token)).Scan(&ownerID)
+		// lookup token hash / $1
+		err = tx.QueryRowContext(timer, "SELECT id FROM guests WHERE token_hash = $1", TokenHash(token)).Scan(&ownerID)
 		if err != nil && err != sql.ErrNoRows {
 			return ChatDatabaseError(err)
 		}
@@ -103,12 +102,12 @@ func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
 		if err != nil {
 			return ChatDatabaseError(err)
 		}
-		// the public name is random too, but never reveals the secret token
+		//random usernames
 		nameID, err := RandomHex(16)
 		if err != nil {
 			return ChatDatabaseError(err)
 		}
-		err = tx.QueryRowContext(ctx,
+		err = tx.QueryRowContext(timer,
 			"INSERT INTO guests (author, token_hash) VALUES ($1, $2) RETURNING id",
 			"Guest-"+nameID, TokenHash(newToken)).Scan(&ownerID)
 		if err != nil {
@@ -120,7 +119,7 @@ func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
 	if err != nil {
 		return ChatDatabaseError(err)
 	}
-	_, err = tx.ExecContext(ctx,
+	_, err = tx.ExecContext(timer,
 		"INSERT INTO messages (id, owner_id, content) VALUES ($1, $2, $3)",
 		messageID, ownerID, *input.Content)
 	if err != nil {
@@ -134,17 +133,18 @@ func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
 	response.SetText("Message sent")
 	response.AddHeader("Cache-Control", "no-store")
 	if newToken != "" {
-		// keep the identity after closing the browser; scripts cannot read it
+		// save identity even after closing browser
 		response.AddHeader("Set-Cookie", "guest_token="+newToken+"; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000")
 	}
 	return response
 }
 
 func (chat *ChatHandlers) GetMessages(request *Request) *Response {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// use a timer so the query doesn't run forever
+	timer, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// join each message to its author's name
-	rows, err := chat.DB.QueryContext(ctx, `
+	// add message to its sender
+	rows, err := chat.DB.QueryContext(timer, `
 		SELECT guests.author, messages.id, messages.content, messages.updated
 		FROM messages JOIN guests ON messages.owner_id = guests.id
 		ORDER BY messages.created_at, messages.id
@@ -154,14 +154,14 @@ func (chat *ChatHandlers) GetMessages(request *Request) *Response {
 	}
 	defer rows.Close()
 
-	// empty slice becomes [] in JSON instead of null
+	// empty slice becomes [] instead of null
 	messages := make([]ChatMessage, 0)
 	for rows.Next() {
 		var message ChatMessage
 		if err := rows.Scan(&message.Author, &message.ID, &message.Content, &message.Updated); err != nil {
 			return ChatDatabaseError(err)
 		}
-		// escape when sending, so HTML displays as text instead of running
+		// HTML displays as text instead of executing scripts
 		message.Content = html.EscapeString(message.Content)
 		message.Author = html.EscapeString(message.Author)
 		message.ImageURL = "/public/imgs/user.webp"
@@ -178,10 +178,10 @@ func (chat *ChatHandlers) GetMessages(request *Request) *Response {
 	return response
 }
 
-// get the message id from a path like /api/chats/abc123
+// get the message id
 func ChatMessageID(request *Request) string {
 	id := strings.TrimPrefix(request.Path, "/api/chats/")
-	// our ids are 16 random bytes written as 32 hex characters
+	// ids are 16 random bytes written as 32 hex characters
 	decoded, err := hex.DecodeString(id)
 	if err != nil || len(decoded) != 16 {
 		return ""
@@ -198,7 +198,7 @@ func (chat *ChatHandlers) UpdateMessage(request *Request) *Response {
 	if token == "" {
 		return ErrorResponse(403, "Forbidden")
 	}
-	// check the new message text before sending it to PostgreSQL
+	// check new message before sending to SQL
 	var input struct {
 		Content *string `json:"content"`
 	}
@@ -208,11 +208,10 @@ func (chat *ChatHandlers) UpdateMessage(request *Request) *Response {
 	if strings.ContainsRune(*input.Content, '\x00') {
 		return ErrorResponse(400, "Bad Request")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timer, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// update only if the cookie belongs to the message owner
-	// checking ownership inside the query prevents a separate check becoming stale
-	result, err := chat.DB.ExecContext(ctx, `
+	result, err := chat.DB.ExecContext(timer, `
 		UPDATE messages SET content = $1, updated = TRUE
 		WHERE id = $2 AND owner_id = (
 			SELECT id FROM guests WHERE token_hash = $3
@@ -233,10 +232,10 @@ func (chat *ChatHandlers) DeleteMessage(request *Request) *Response {
 	if token == "" {
 		return ErrorResponse(403, "Forbidden")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timer, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// delete only the message owned by this cookie's guest
-	result, err := chat.DB.ExecContext(ctx, `
+	// delete message if cookie belongs to owner
+	result, err := chat.DB.ExecContext(timer, `
 		DELETE FROM messages
 		WHERE id = $1 AND owner_id = (
 			SELECT id FROM guests WHERE token_hash = $2
@@ -248,13 +247,13 @@ func (chat *ChatHandlers) DeleteMessage(request *Request) *Response {
 	return MessageChangeResponse(result, "Message deleted")
 }
 
-// check whether the update or delete actually changed a row
+// check if update or delete changed row
 func MessageChangeResponse(result sql.Result, message string) *Response {
 	count, err := result.RowsAffected()
 	if err != nil {
 		return ChatDatabaseError(err)
 	}
-	// no matching owned message, so nothing was changed
+	// no matching owned message so nothing was changed
 	if count == 0 {
 		return ErrorResponse(403, "Forbidden")
 	}
@@ -264,7 +263,6 @@ func MessageChangeResponse(result sql.Result, message string) *Response {
 	return response
 }
 
-// show database errors in the terminal, not in the browser
 func ChatDatabaseError(err error) *Response {
 	fmt.Println("Chat error:", err)
 	return ErrorResponse(500, "Internal Server Error")

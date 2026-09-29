@@ -12,7 +12,6 @@ import (
 // collects one complete request from connection
 func ReadRequest(source io.Reader) (*Request, error) {
 	// bufio makes reading incoming bytes good
-	// reuse buffered bytes when another request arrives on the same connection
 	reader, buffered := source.(*bufio.Reader)
 	if !buffered {
 		reader = bufio.NewReader(source)
@@ -28,7 +27,6 @@ func ReadRequest(source io.Reader) (*Request, error) {
 		//read next byte
 		b, err := reader.ReadByte()
 		if err != nil {
-			// EOF before a new request means the client closed normally
 			if err == io.EOF && len(headers) > 0 {
 				err = io.ErrUnexpectedEOF
 			}
@@ -47,7 +45,7 @@ func ReadRequest(source io.Reader) (*Request, error) {
 	}
 
 	length := 0
-	// If Content-Length is present, validate it and read the body
+	// If content Length exists, validate and read body
 	if value, exists := request.Headers["content-length"]; exists {
 		if value == "" || strings.Trim(value, "0123456789") != "" {
 			return nil, fmt.Errorf("invalid Content-Length")
@@ -60,7 +58,7 @@ func ReadRequest(source io.Reader) (*Request, error) {
 	}
 
 	// ReadFull keeps reading until exactly length bytes arrive.
-	// It returns an error if the client disconnects before sending them all.
+	// returns err if user disconnects or sends fewer bytes than expected
 	request.Body = make([]byte, length)
 	if _, err := io.ReadFull(reader, request.Body); err != nil {
 		if err == io.EOF {
@@ -119,7 +117,6 @@ func ParseRequest(raw []byte) (*Request, error) {
 			return nil, fmt.Errorf("duplicate  header: %s", name)
 		}
 		// remove space around the value
-		// combine repeated Connection headers so a close request is not lost
 		if name == "connection" && request.Headers[name] != "" {
 			request.Headers[name] += ", " + strings.TrimSpace(header[1])
 			continue

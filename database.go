@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	// register the PostgreSQL driver with database/sql
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -18,20 +17,19 @@ func OpenDatabase() (*sql.DB, error) {
 		return nil, fmt.Errorf("set DATABASE_URL before starting the server")
 	}
 
-	// prepare connections using the pgx database driver
 	db, err := sql.Open("pgx", connectionString)
 	if err != nil {
 		return nil, err
 	}
-	// limit how many database connections the server can open
+	// limit database connections
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(2)
 
-	// give the connection check 5 seconds to finish
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// give the connection check 5s to finish
+	timer, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// Open prepares the connection, Ping checks that the database answers
-	if err := db.PingContext(ctx); err != nil {
+	// check database connection before starting the server
+	if err := db.PingContext(timer); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("could not connect to PostgreSQL: %w", err)
 	}
@@ -40,19 +38,18 @@ func OpenDatabase() (*sql.DB, error) {
 
 func CreateTables(db *sql.DB) error {
 	// stop if database setup takes too long
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timer, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// create both tables together, or undo setup if either step fails
-	tx, err := db.BeginTx(ctx, nil)
+	tm, err := db.BeginTx(timer, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tm.Rollback()
 
-	// each guest has a name and a hash of their secret cookie token
-	// BIGSERIAL gives each new guest a different number
-	_, err = tx.ExecContext(ctx, `
+	// each person has name and secret token hash
+	_, err = tm.ExecContext(timer, `
 		CREATE TABLE IF NOT EXISTS guests (
 			id BIGSERIAL PRIMARY KEY,
 			author TEXT NOT NULL UNIQUE,
@@ -63,9 +60,9 @@ func CreateTables(db *sql.DB) error {
 		return fmt.Errorf("creating guests table: %w", err)
 	}
 
-	// owner_id links each message to its guest
-	// updated starts false and will become true when a message is edited
-	_, err = tx.ExecContext(ctx, `
+	// owner_id connects message to owner
+	// updated starts false and becomes true when message is edited
+	_, err = tm.ExecContext(timer, `
 		CREATE TABLE IF NOT EXISTS messages (
 			id TEXT PRIMARY KEY,
 			owner_id BIGINT NOT NULL REFERENCES guests(id),
@@ -79,5 +76,5 @@ func CreateTables(db *sql.DB) error {
 	}
 
 	// keep the tables, existing rows are left alone
-	return tx.Commit()
+	return tm.Commit()
 }

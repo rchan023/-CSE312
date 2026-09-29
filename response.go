@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Response holds the information we want to send back to the browser.
+// information sent to browser
 type Response struct {
 	KeepAlive  bool // true leaves the connection open for another request
 	StatusCode int
@@ -25,14 +25,13 @@ func NewResponse() *Response {
 	}
 }
 
-// A method is a function attached to a type. r is the Response being changed.
 func (r *Response) SetStatus(code int, message string) {
 	r.StatusCode = code
 	r.StatusText = message
 }
 
 func (r *Response) AddHeader(name string, value string) {
-	// Lowercase names prevent duplicate keys such as Content-Type/content-type.
+	// Lowercase prevents duplicate keys 
 	r.Headers[strings.ToLower(name)] = value
 }
 
@@ -41,7 +40,7 @@ func (r *Response) SetText(text string) {
 	r.Body = []byte(text)                                    //body of response
 }
 
-// Marshal converts Go data into JSON bytes. It does not handle HTTP for us.
+//  converts go to json
 func (r *Response) SetJSON(data any) error {
 	body, err := json.Marshal(data)
 	if err != nil {
@@ -52,7 +51,7 @@ func (r *Response) SetJSON(data any) error {
 	return nil
 }
 
-// Binary data stays as bytes, so images and other files are not changed.
+// binary data stays as bytes, so images are not changed.
 func (r *Response) SetBinary(body []byte, contentType string) {
 	r.AddHeader("Content-Type", contentType)
 	r.Body = body
@@ -61,25 +60,23 @@ func (r *Response) SetBinary(body []byte, contentType string) {
 // Bytes builds the HTTP status line, headers, blank line, and body.
 func (r *Response) Bytes() []byte {
 	result := fmt.Sprintf("HTTP/1.1 %d %s\r\n", r.StatusCode, r.StatusText)
-	// give the browser a starting time for cache freshness
 	result += "Date: " + time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT") + "\r\n"
 
 	for name, value := range r.Headers {
-		// These three headers are always set below so they stay consistent.
+		// These headers are always set so they stay consistent.
 		if name == "content-length" || name == "x-content-type-options" || name == "connection" {
 			continue
 		}
 		result += name + ": " + value + "\r\n"
 	}
 
-	// Sprintf replaces %d with the length and %s with our message.
-	connection := "Connection: close\r\n" //close connection after response
+	connection := "Connection: close\r\n"
 	if r.KeepAlive {
 		connection = "Connection: keep-alive\r\n"
 	}
 	result += connection
 	if r.StatusCode == 304 {
-		// 304 has no body; leave out Content-Length rather than report zero
+		// 304 has no body; leave out contentLength rather than report zero
 		result += "X-Content-Type-Options: nosniff\r\n\r\n"
 		return []byte(result)
 	}

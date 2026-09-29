@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +80,34 @@ func (files *FileHandlers) StaticFile(request *Request) *Response {
 	response := NewResponse()
 	// attach the bytes and the content type for this file
 	response.SetBinary(body, FileContentType(name))
+	// hash file contents so the tag changes when the file changes
+	hash := sha256.Sum256(body)
+	etag := fmt.Sprintf("\"%x\"", hash)
+	response.AddHeader("ETag", etag)
+	// browser can reuse the file for 10 seconds before checking again
+	response.AddHeader("Cache-Control", "public, max-age=10, must-revalidate")
+	if ETagMatches(request.Headers["if-none-match"], etag) {
+		// browser already has this version, so send headers without the file
+		response.SetStatus(304, "Not Modified")
+		response.Body = nil
+	}
 	return response
+}
+
+func ETagMatches(header string, etag string) bool {
+	// clients can send a list of tags or * for any existing version
+	for _, tag := range strings.Split(header, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "*" {
+			return true
+		}
+		// weak tags use W/ before the quoted value and also work for GET
+		tag = strings.TrimPrefix(tag, "W/")
+		if tag == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // choose content type from file extension

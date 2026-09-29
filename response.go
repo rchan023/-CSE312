@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Response holds the information we want to send back to the browser.
@@ -60,6 +61,8 @@ func (r *Response) SetBinary(body []byte, contentType string) {
 // Bytes builds the HTTP status line, headers, blank line, and body.
 func (r *Response) Bytes() []byte {
 	result := fmt.Sprintf("HTTP/1.1 %d %s\r\n", r.StatusCode, r.StatusText)
+	// give the browser a starting time for cache freshness
+	result += "Date: " + time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT") + "\r\n"
 
 	for name, value := range r.Headers {
 		// These three headers are always set below so they stay consistent.
@@ -75,6 +78,11 @@ func (r *Response) Bytes() []byte {
 		connection = "Connection: keep-alive\r\n"
 	}
 	result += connection
+	if r.StatusCode == 304 {
+		// 304 has no body; leave out Content-Length rather than report zero
+		result += "X-Content-Type-Options: nosniff\r\n\r\n"
+		return []byte(result)
+	}
 	result += fmt.Sprintf(
 		"Content-Length: %d\r\n"+ //length of body in bytes
 			"X-Content-Type-Options: nosniff\r\n"+ //prevents browser from guessing content type

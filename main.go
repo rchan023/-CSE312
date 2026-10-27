@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,28 @@ func main() {
 	router := CreateRouter(root)
 	// add chat routes that use SQL
 	AddChatRoutes(router, db)
+	AddAuthRoutes(router, db)
+	mediaDir := os.Getenv("MEDIA_DIR")
+	if mediaDir == "" {
+		mediaDir = "data/media"
+	}
+	liveDir := os.Getenv("HLS_DIR")
+	if liveDir == "" {
+		liveDir = "data/live"
+	}
+	media, err := NewMediaHandlers(db, mediaDir, liveDir)
+	if err != nil {
+		fmt.Println("Media setup failed:", err)
+		return
+	}
+	defer media.Close()
+	media.AddRoutes(router)
+	workers, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+	if err = media.StartWorkers(workers); err != nil {
+		fmt.Println("Worker setup failed")
+		return
+	}
 
 	// listen for browser connections
 	listener, err := net.Listen("tcp", ":8080")
@@ -68,7 +91,7 @@ func main() {
 func handleConnection(conn net.Conn, router *Router) {
 	defer conn.Close()
 	// one reader per connection saves extra bytes for the next request
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(idleReader{conn})
 	for {
 		// allow user 30 seconds to send request
 		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
@@ -96,6 +119,7 @@ func handleConnection(conn net.Conn, router *Router) {
 		fmt.Printf("Parsed Request: Method: %s, Path: %s\n", request.Method, request.Path)
 
 		response := router.Route(request)
+		request.Cleanup()
 		response.KeepAlive = request.KeepAlive()
 		// Send the response; stop handling this connection if sending fails.
 		if err := writeResponse(conn, response); err != nil {
@@ -109,18 +133,38 @@ func handleConnection(conn net.Conn, router *Router) {
 	}
 }
 
-func writeResponse(conn net.Conn, response *Response) error {
-	// stop waiting if user is not receiving our response
-	if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		fmt.Println("Error setting write deadline:", err)
-		return err
-	}
+type idleReader struct{ net.Conn }
 
-	// send response as bytes that make http message, newreader lets copy read bytes
-	_, err := io.Copy(conn, bytes.NewReader(response.Bytes()))
-	if err != nil {
-		fmt.Println("Error writing to connection:", err)
+func (r idleReader) Read(p []byte) (int, error) {
+	if err := r.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return 0, err
+	}
+	return r.Conn.Read(p)
+}
+
+type idleWriter struct{ net.Conn }
+
+func (w idleWriter) Write(p []byte) (int, error) {
+	if err := w.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return 0, err
+	}
+	return w.Conn.Write(p)
+}
+func writeResponse(conn net.Conn, response *Response) error {
+	if response.Stream != nil {
+		defer response.Stream.Close()
+	}
+	writer := idleWriter{conn}
+	if _, err := io.Copy(writer, bytes.NewReader(response.HeaderBytes())); err != nil {
 		return err
 	}
-	return nil
+	if response.StatusCode == 304 {
+		return nil
+	}
+	if response.Stream != nil {
+		_, err := io.CopyN(writer, response.Stream, response.StreamLength)
+		return err
+	}
+	_, err := io.Copy(writer, bytes.NewReader(response.Body))
+	return err
 }

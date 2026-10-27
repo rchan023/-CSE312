@@ -1,69 +1,23 @@
-import { html } from "./utils.js";
-
-function createVideoHTML(options) {
-    const videoHTML = html`
-    <a href="/videotube/videos/${options.id}" class="flex flex-col gap-2 w-[300px] cursor-pointer rounded-xl p-2 group">
-        <img
-            width="300"
-            height="168"
-            class="rounded-xl object-cover border border-gray-300"
-            src="${options.thumbnailURL}"
-        />
-
-        <div class="flex flex-row gap-3">
-            <div class="flex flex-col">
-                <h3 class="font-semibold text-base line-clamp-2 group-hover:underline">
-                    ${options.title}
-                </h3>
-                <p class="text-sm text-gray-500 mt-1">Video Uploader</p>
-                <div class="flex flex-row gap-1 text-sm text-gray-500">
-                    <p>${options.created_at}</p>
-                </div>
-            </div>
-        </div>
-    </a>
-  `;
-    const videoElement = document.createElement("a");
-    videoElement.innerHTML = videoHTML;
-
-    return videoElement;
-}
-
 async function loadVideos() {
-    try {
-        const response = await fetch('/api/videos');
-        if (!response.ok) {
-            alertManager.newAlert(
-                `Error: ${await response.text()}`,
-                "error",
-                5000,
-                "Video Load Error"
-            );
-            return;
-        }
-
-        const data = await response.json();
-        const videoList = document.getElementById("video-list");
-        videoList.innerHTML = ''; // Clear mock data
-
-        if (data.videos.length === 0) {
-            videoList.innerHTML = '<p class="text-center text-gray-500">No videos found</p>';
-            return;
-        }
-
-        data.videos.forEach((video) => {
-            const videoHTML = createVideoHTML(video);
-            videoList.appendChild(videoHTML);
-        });
-    } catch (error) {
-        console.error('Error loading videos:', error);
-        alertManager.newAlert(
-            `Error: ${error.message}`,
-            "error",
-            5000,
-            "Video Load Error"
-        );
-    }
+ try {
+  const response = await fetch("/api/videos",{cache:"no-store"});
+  if (!response.ok) throw new Error("Could not load videos.");
+  const {videos} = await response.json();
+  const list = document.getElementById("video-list");
+  list.replaceChildren();
+  document.getElementById("videos-status").textContent = videos.length ? "" : "No videos yet.";
+  for (const video of videos) {
+   const link = document.createElement("a");
+   link.href = "/videotube/videos/" + video.id;
+   link.className = "block w-72 p-3 bg-gray-800 rounded space-y-2";
+   const image = document.createElement("img"); image.src = video.thumbnailURL; image.alt = ""; image.className="w-full h-40 object-cover rounded";
+   const title = document.createElement("h2"); title.innerHTML = video.title;
+   const status = document.createElement("p");
+   status.textContent = ["queued","processing"].includes(video.status) ? "Processing video…" : video.status === "failed" ? "Original video available; conversion failed." : "Ready";
+   const date = document.createElement("p"); date.textContent = new Date(video.created_at).toLocaleString();
+   link.append(image,title,status,date); list.append(link);
+  }
+ } catch(error) { document.getElementById("videos-status").textContent=error.message; }
 }
-
 loadVideos();
+setInterval(loadVideos,5000);

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -44,37 +45,75 @@ func ReadRequest(source io.Reader) (*Request, error) {
 		return nil, fmt.Errorf("transfer encoding is not supported yet")
 	}
 
-	length := 0
-	// If content Length exists, validate and read body
+	// Read exactly Content-Length bytes; never consume the next request.
+	var length int64
 	if value, exists := request.Headers["content-length"]; exists {
 		if value == "" || strings.Trim(value, "0123456789") != "" {
 			return nil, fmt.Errorf("invalid Content-Length")
 		}
-		//convert string to int
-		length, err = strconv.Atoi(value)
-		if err != nil || length > 1024*1024 {
-			return nil, fmt.Errorf("Content-Length exceeds the 1 MiB body limit")
+		length, err = strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Content-Length")
 		}
 	}
-
-	// ReadFull keeps reading until exactly length bytes arrive.
-	// returns err if user disconnects or sends fewer bytes than expected
-	request.Body = make([]byte, length)
-	if _, err := io.ReadFull(reader, request.Body); err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
+	request.BodySize = length
+	if length <= 1024*1024 {
+		request.Body = make([]byte, 0, int(length))
+	} else {
+		request.BodyFile, err = os.CreateTemp("", "cse312-upload-*")
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("reading request body: %w", err)
 	}
+	success := false
+	defer func() {
+		if !success {
+			request.Cleanup()
+		}
+	}()
+	buffer := make([]byte, 32*1024)
+	for received := int64(0); received < length; {
+		want := min(int64(len(buffer)), length-received)
+		n, readErr := reader.Read(buffer[:int(want)])
+		if n > 0 {
+			if request.BodyFile != nil {
+				written, writeErr := request.BodyFile.Write(buffer[:n])
+				if writeErr != nil {
+					return nil, writeErr
+				}
+				if written != n {
+					return nil, io.ErrShortWrite
+				}
+			} else {
+				request.Body = append(request.Body, buffer[:n]...)
+			}
+			received += int64(n)
+		}
+		if received == length {
+			break
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				readErr = io.ErrUnexpectedEOF
+			}
+			return nil, fmt.Errorf("reading request body: %w", readErr)
+		}
+		if n == 0 {
+			return nil, io.ErrNoProgress
+		}
+	}
+	success = true
 	return request, nil
 }
 
 type Request struct {
-	Version string            // HTTP/1.1 or HTTP/1.0
-	Method  string            //action such as GET, POST, etc
-	Path    string            //target such as /chat
-	Headers map[string]string //holds metadata, make creates an empty header map
-	Body    []byte            //holds data as bytes
+	BodyFile *os.File // large bodies stay on disk
+	BodySize int64
+	Version  string            // HTTP/1.1 or HTTP/1.0
+	Method   string            //action such as GET, POST, etc
+	Path     string            //target such as /chat
+	Headers  map[string]string //holds metadata, make creates an empty header map
+	Body     []byte            //holds data as bytes
 }
 
 // converts bytes into request
@@ -139,4 +178,19 @@ func (request *Request) KeepAlive() bool {
 		}
 	}
 	return keepAlive
+}
+
+func (request *Request) Cleanup() {
+	if request.BodyFile != nil {
+		name := request.BodyFile.Name()
+		request.BodyFile.Close()
+		os.Remove(name)
+		request.BodyFile = nil
+	}
+}
+func (request *Request) Data() (io.ReaderAt, int64) {
+	if request.BodyFile != nil {
+		return request.BodyFile, request.BodySize
+	}
+	return bytes.NewReader(request.Body), int64(len(request.Body))
 }

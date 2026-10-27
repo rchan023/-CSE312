@@ -4,4 +4,3 @@
 .env.*
 *.exe
 *.zip
-*_test.go

@@ -1,0 +1,19 @@
+<section class="space-y-5"><h1>Live Streams</h1>
+<a class="underline" href="/settings">Get your stream key</a>
+<p id="live-status" role="status"></p><div id="live-list" class="flex flex-wrap gap-4"></div>
+</section>
+<script type="module">
+async function refresh(){
+ try{
+  const response=await fetch("/api/live",{cache:"no-store"});if(!response.ok)throw new Error("Could not load streams.");
+  const {streams}=await response.json();const list=document.getElementById("live-list");list.replaceChildren();
+  document.getElementById("live-status").textContent=streams.length?"":"Nobody is live yet.";
+  for(const stream of streams){
+   const link=document.createElement("a");link.href="/live/watch/"+stream.id;link.className="p-4 bg-gray-800 rounded";
+   const name=document.createElement("span");name.innerHTML=stream.author;
+   link.append(name,document.createTextNode(" — LIVE"));list.append(link);
+  }
+ }catch(error){document.getElementById("live-status").textContent=error.message;}
+}
+refresh();setInterval(refresh,3000);
+</script>

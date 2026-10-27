@@ -65,6 +65,14 @@ func GuestToken(request *Request) string {
 }
 
 func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
+	account, err := CurrentUser(chat.DB, request)
+	if err != nil {
+		return ChatDatabaseError(err)
+	}
+	var accountID any
+	if account != nil {
+		accountID = account.DatabaseID
+	}
 	// pointer to compare empty vs. null
 	var input struct {
 		Content *string `json:"content"`
@@ -120,8 +128,8 @@ func (chat *ChatHandlers) CreateMessage(request *Request) *Response {
 		return ChatDatabaseError(err)
 	}
 	_, err = tx.ExecContext(timer,
-		"INSERT INTO messages (id, owner_id, content) VALUES ($1, $2, $3)",
-		messageID, ownerID, *input.Content)
+		"INSERT INTO messages (id, owner_id, content, user_id) VALUES ($1, $2, $3, $4)",
+		messageID, ownerID, *input.Content, accountID)
 	if err != nil {
 		return ChatDatabaseError(err)
 	}
@@ -145,8 +153,10 @@ func (chat *ChatHandlers) GetMessages(request *Request) *Response {
 	defer cancel()
 	// add message to its sender
 	rows, err := chat.DB.QueryContext(timer, `
-		SELECT guests.author, messages.id, messages.content, messages.updated
+		SELECT COALESCE(users.display_name, guests.author), messages.id, messages.content, messages.updated,
+		       COALESCE(users.image_url, '/public/imgs/user.webp')
 		FROM messages JOIN guests ON messages.owner_id = guests.id
+		LEFT JOIN users ON messages.user_id = users.id
 		ORDER BY messages.created_at, messages.id
 	`)
 	if err != nil {
@@ -158,13 +168,13 @@ func (chat *ChatHandlers) GetMessages(request *Request) *Response {
 	messages := make([]ChatMessage, 0)
 	for rows.Next() {
 		var message ChatMessage
-		if err := rows.Scan(&message.Author, &message.ID, &message.Content, &message.Updated); err != nil {
+		if err := rows.Scan(&message.Author, &message.ID, &message.Content, &message.Updated, &message.ImageURL); err != nil {
 			return ChatDatabaseError(err)
 		}
 		// HTML displays as text instead of executing scripts
 		message.Content = html.EscapeString(message.Content)
 		message.Author = html.EscapeString(message.Author)
-		message.ImageURL = "/public/imgs/user.webp"
+		message.ImageURL = html.EscapeString(message.ImageURL)
 		messages = append(messages, message)
 	}
 	if err := rows.Err(); err != nil {
@@ -194,8 +204,16 @@ func (chat *ChatHandlers) UpdateMessage(request *Request) *Response {
 	if id == "" {
 		return ErrorResponse(404, "Not Found")
 	}
+	account, err := CurrentUser(chat.DB, request)
+	if err != nil {
+		return ChatDatabaseError(err)
+	}
+	var accountID int64
+	if account != nil {
+		accountID = account.DatabaseID
+	}
 	token := GuestToken(request)
-	if token == "" {
+	if account == nil && token == "" {
 		return ErrorResponse(403, "Forbidden")
 	}
 	// check new message before sending to SQL
@@ -213,10 +231,11 @@ func (chat *ChatHandlers) UpdateMessage(request *Request) *Response {
 	// update only if the cookie belongs to the message owner
 	result, err := chat.DB.ExecContext(timer, `
 		UPDATE messages SET content = $1, updated = TRUE
-		WHERE id = $2 AND owner_id = (
-			SELECT id FROM guests WHERE token_hash = $3
+		WHERE id = $2 AND (
+			($4 <> 0 AND user_id = $4) OR
+			($4 = 0 AND user_id IS NULL AND owner_id = (SELECT id FROM guests WHERE token_hash = $3))
 		)
-	`, *input.Content, id, TokenHash(token))
+	`, *input.Content, id, TokenHash(token), accountID)
 	if err != nil {
 		return ChatDatabaseError(err)
 	}
@@ -228,8 +247,16 @@ func (chat *ChatHandlers) DeleteMessage(request *Request) *Response {
 	if id == "" {
 		return ErrorResponse(404, "Not Found")
 	}
+	account, err := CurrentUser(chat.DB, request)
+	if err != nil {
+		return ChatDatabaseError(err)
+	}
+	var accountID int64
+	if account != nil {
+		accountID = account.DatabaseID
+	}
 	token := GuestToken(request)
-	if token == "" {
+	if account == nil && token == "" {
 		return ErrorResponse(403, "Forbidden")
 	}
 	timer, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -237,10 +264,11 @@ func (chat *ChatHandlers) DeleteMessage(request *Request) *Response {
 	// delete message if cookie belongs to owner
 	result, err := chat.DB.ExecContext(timer, `
 		DELETE FROM messages
-		WHERE id = $1 AND owner_id = (
-			SELECT id FROM guests WHERE token_hash = $2
+		WHERE id = $1 AND (
+			($3 <> 0 AND user_id = $3) OR
+			($3 = 0 AND user_id IS NULL AND owner_id = (SELECT id FROM guests WHERE token_hash = $2))
 		)
-	`, id, TokenHash(token))
+	`, id, TokenHash(token), accountID)
 	if err != nil {
 		return ChatDatabaseError(err)
 	}

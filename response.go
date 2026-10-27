@@ -3,17 +3,21 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
 
 // information sent to browser
 type Response struct {
-	KeepAlive  bool // true leaves the connection open for another request
-	StatusCode int
-	StatusText string
-	Headers    map[string]string
-	Body       []byte
+	Stream       io.ReadCloser
+	StreamLength int64
+	KeepAlive    bool // true leaves the connection open for another request
+	StatusCode   int
+	StatusText   string
+	Headers      map[string]string
+	Cookies      []string
+	Body         []byte
 }
 
 // Start with a successful response and an empty header map.
@@ -31,7 +35,11 @@ func (r *Response) SetStatus(code int, message string) {
 }
 
 func (r *Response) AddHeader(name string, value string) {
-	// Lowercase prevents duplicate keys 
+	// Lowercase prevents duplicate keys
+	if strings.EqualFold(name, "Set-Cookie") {
+		r.Cookies = append(r.Cookies, value)
+		return
+	}
 	r.Headers[strings.ToLower(name)] = value
 }
 
@@ -40,7 +48,7 @@ func (r *Response) SetText(text string) {
 	r.Body = []byte(text)                                    //body of response
 }
 
-//  converts go to json
+// converts go to json
 func (r *Response) SetJSON(data any) error {
 	body, err := json.Marshal(data)
 	if err != nil {
@@ -58,7 +66,7 @@ func (r *Response) SetBinary(body []byte, contentType string) {
 }
 
 // Bytes builds the HTTP status line, headers, blank line, and body.
-func (r *Response) Bytes() []byte {
+func (r *Response) HeaderBytes() []byte {
 	result := fmt.Sprintf("HTTP/1.1 %d %s\r\n", r.StatusCode, r.StatusText)
 	result += "Date: " + time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT") + "\r\n"
 
@@ -70,6 +78,9 @@ func (r *Response) Bytes() []byte {
 		result += name + ": " + value + "\r\n"
 	}
 
+	for _, cookie := range r.Cookies {
+		result += "Set-Cookie: " + cookie + "\r\n"
+	}
 	connection := "Connection: close\r\n"
 	if r.KeepAlive {
 		connection = "Connection: keep-alive\r\n"
@@ -80,13 +91,20 @@ func (r *Response) Bytes() []byte {
 		result += "X-Content-Type-Options: nosniff\r\n\r\n"
 		return []byte(result)
 	}
-	result += fmt.Sprintf(
-		"Content-Length: %d\r\n"+ //length of body in bytes
-			"X-Content-Type-Options: nosniff\r\n"+ //prevents browser from guessing content type
-			"\r\n"+ //blank line separates headers and body
-			"%s", //body of response
-		len(r.Body), //length of body in bytes
-		r.Body,      //body of response
-	)
+
+	length := int64(len(r.Body))
+	if r.Stream != nil {
+		length = r.StreamLength
+	}
+	result += fmt.Sprintf("Content-Length: %d\r\nX-Content-Type-Options: nosniff\r\n\r\n", length)
 	return []byte(result)
+}
+
+// Bytes is for ordinary in-memory responses.
+func (r *Response) Bytes() []byte {
+	header := r.HeaderBytes()
+	if r.StatusCode == 304 {
+		return header
+	}
+	return append(header, r.Body...)
 }

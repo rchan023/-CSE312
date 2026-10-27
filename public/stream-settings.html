@@ -1,0 +1,24 @@
+<section class="max-w-2xl space-y-5">
+<h1>Stream Settings</h1>
+<p>In OBS, choose Settings → Stream → Custom. Use the server below and your private stream key.</p>
+<label class="block">Server <input id="stream-server" class="block w-full p-2" readonly value="rtmp://localhost:1935/live"></label>
+<label class="block">Your stream key <input id="stream-key" class="block w-full p-2" type="password" readonly autocomplete="off"></label>
+<button id="toggle-key" class="bg-blue-700 rounded px-3 py-2">Show / hide key</button>
+<p>Keep this key private. Anyone who has it can stream as you.</p>
+<p id="key-error" role="status"></p>
+<a href="/live" class="underline">Watch live streams</a>
+</section>
+<script type="module">
+const response = await fetch("/api/live/key", {cache:"no-store"});
+if (response.status === 401) location.href = "/login";
+else if (!response.ok) document.getElementById("key-error").textContent = "Could not load your stream key.";
+else {
+ const data = await response.json();
+ document.getElementById("stream-key").value = data.stream_key;
+ document.getElementById("stream-server").value = data.server;
+}
+document.getElementById("toggle-key").onclick = () => {
+ const key = document.getElementById("stream-key");
+ key.type = key.type === "password" ? "text" : "password";
+};
+</script>

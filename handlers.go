@@ -20,7 +20,31 @@ func CreateRouter(root *os.Root) *Router {
 	// false requires an exact path, true allows path with prefix
 	router.AddRoute("GET", "/", false, files.Home)
 	router.AddRoute("GET", "/chat", false, files.Chat)
+	router.AddRoute("GET", "/register", false, files.Register)
+	router.AddRoute("GET", "/login", false, files.Login)
 	router.AddRoute("GET", "/public/", true, files.StaticFile)
+
+	for path, page := range map[string]string{
+		"/change-avatar":    "change-avatar.html",
+		"/videotube":        "videotube.html",
+		"/videotube/upload": "upload.html",
+		"/settings":         "stream-settings.html",
+		"/live":             "live.html",
+	} {
+		router.AddRoute("GET", path, false, func(request *Request) *Response { return files.RenderPage(page) })
+	}
+	router.AddRoute("GET", "/videotube/videos/", true, func(request *Request) *Response {
+		if !validID(strings.TrimPrefix(request.Path, "/videotube/videos/")) {
+			return ErrorResponse(404, "Not Found")
+		}
+		return files.RenderPage("view-video.html")
+	})
+	router.AddRoute("GET", "/live/watch/", true, func(request *Request) *Response {
+		if !validID(strings.TrimPrefix(request.Path, "/live/watch/")) {
+			return ErrorResponse(404, "Not Found")
+		}
+		return files.RenderPage("watch-live.html")
+	})
 	return router
 }
 
@@ -30,6 +54,10 @@ func (files *FileHandlers) Home(request *Request) *Response {
 
 func (files *FileHandlers) Chat(request *Request) *Response {
 	return files.RenderPage("chat.html")
+}
+
+func (files *FileHandlers) Register(request *Request) *Response {
+	return files.RenderPage("register.html")
 }
 
 func (files *FileHandlers) RenderPage(name string) *Response {
@@ -69,6 +97,9 @@ func (files *FileHandlers) StaticFile(request *Request) *Response {
 	// Stat gets file information without reading the file contents
 	if err != nil || !info.Mode().IsRegular() {
 		return ErrorResponse(404, "Not Found")
+	}
+	if strings.HasSuffix(strings.ToLower(name), ".mp4") {
+		return ServeDiskFile(files.Root, name, request, "no-cache")
 	}
 	// read raw bytes so images don't change content
 	body, err := files.Root.ReadFile(name)
@@ -126,10 +157,20 @@ func FileContentType(name string) string {
 		return "image/x-icon"
 	case ".png":
 		return "image/png"
+	case ".mp4":
+		return "video/mp4"
+	case ".m3u8":
+		return "application/vnd.apple.mpegurl"
+	case ".ts":
+		return "video/mp2t"
 	case ".svg":
 		return "image/svg+xml"
 	default:
 		// unknown extensions are treated as general binary data
 		return "application/octet-stream"
 	}
+}
+
+func (files *FileHandlers) Login(request *Request) *Response {
+	return files.RenderPage("login.html")
 }

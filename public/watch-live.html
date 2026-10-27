@@ -1,0 +1,23 @@
+<section class="max-w-4xl space-y-4"><h1 id="stream-title">Live Stream</h1>
+<video id="video-player" controls playsinline class="w-full bg-black rounded"></video>
+<p id="playback-status" role="status">Waiting for stream…</p><a href="/live" class="underline">All live streams</a></section>
+<script type="module">
+import {playHLS} from "/public/js/player.js";
+const id=location.pathname.split("/").pop(),status=document.getElementById("playback-status"),player=document.getElementById("video-player");
+let started=false,hls=null;
+async function refresh(){
+ try{
+  const response=await fetch("/api/live",{cache:"no-store"});if(!response.ok)throw new Error("Could not check stream.");
+  const {streams}=await response.json();const stream=streams.find(item=>item.id===id);
+  if(!stream){status.textContent="This stream has ended.";player.pause();if(hls){hls.destroy();hls=null;}return;}
+  document.getElementById("stream-title").innerHTML=stream.author+" — Live";
+  if(!started){
+   const playlist=await fetch(stream.hls_path,{cache:"no-store"});
+   if(playlist.ok){status.textContent="Live";hls=playHLS(player,stream.hls_path,status,undefined,true);started=true;}
+   else status.textContent="Stream is starting. Waiting for video…";
+  }
+ }catch(error){status.textContent=error.message;}
+ setTimeout(refresh,3000);
+}
+refresh();
+</script>

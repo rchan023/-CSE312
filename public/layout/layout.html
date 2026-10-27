@@ -132,6 +132,7 @@
           </div>
 
           <label>Homework 3</label>
+<div class="nav-group"><a href="/live">Live Streams</a></div>
 
           <div class="nav-group">
             <i data-lucide="circle-user-round"></i>
@@ -205,7 +206,7 @@
 
     <script src="https://unpkg.com/lucide@latest"></script>
     <script>
-      lucide.createIcons();
+      if (window.lucide) lucide.createIcons();
 
       async function main() {
         const userProfile = await (await fetch("/api/users/@me")).json();
@@ -214,7 +215,7 @@
         const loggedIn = document.getElementById("logged-in");
         const myUsername = document.getElementById("hello-username");
 
-        console.log("USER PROFILE", userProfile);
+
         if (userProfile.id) {
           loginButton.style.display = "none";
           registerButton.style.display = "none";
